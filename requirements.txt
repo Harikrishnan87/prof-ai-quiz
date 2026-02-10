@@ -1,0 +1,4 @@
+streamlit
+openai
+pandas
+st-gsheets-connection
