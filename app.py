@@ -23,7 +23,7 @@ def get_db_connection():
 def generate_questions(topic, num_questions):
     # This connects to OpenAI using the key we will set up in Step 3
     try:
-        client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+        client = OpenAI(api_key=st.secrets["sk-abcdef1234567890abcdef1234567890abcdef12"])
         
         prompt = f"""
         Create a difficult multiple choice quiz with exactly {num_questions} questions on the topic: '{topic}'.
