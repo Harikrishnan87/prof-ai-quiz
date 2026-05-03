@@ -10,12 +10,12 @@ from openai import OpenAI
 
 # --- CONFIGURATION ---
 ADMIN_PASSWORD = "admin123"
-# The URL is hardcoded here as requested
+# The URL is hardcoded here, exactly as you requested
 SHEET_URL = "https://docs.google.com/spreadsheets/d/1t4JYC-O71X3bV2F0SbNrWXZvLcpNZwn_XXQ-6RGWv64/edit"
 
-# --- DATABASE CONNECTION (Using gspread) ---
+# --- DATABASE CONNECTION ---
 def get_sheet(worksheet_name):
-    # This reads credentials from secrets.toml, avoiding errors
+    # This now correctly looks for [gspread_creds] in your TOML
     creds_dict = dict(st.secrets["gspread_creds"])
     scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
@@ -25,10 +25,10 @@ def get_sheet(worksheet_name):
 # --- AI PARSER ---
 def generate_questions(topic, num_q):
     try:
+        # Pulls API key from TOML
         client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
         prompt = f"Create {num_q} MCQ questions on {topic}. Return ONLY valid JSON: {{'questions': [{{'id': 1, 'question_text': '...', 'options': ['A','B','C','D'], 'correct_option': 'A'}}]}}"
         response = client.chat.completions.create(model="gpt-3.5-turbo", messages=[{"role": "user", "content": prompt}], temperature=0.7)
-        # Robustly find JSON in the AI response
         content = response.choices[0].message.content
         match = re.search(r'\{.*\}', content, re.DOTALL)
         return json.loads(match.group(0))
@@ -57,10 +57,13 @@ def professor_dashboard():
                 st.success("Published!")
 
     st.subheader("Manage Results")
-    res_df = pd.DataFrame(get_sheet("Results").get_all_records())
-    if not res_df.empty:
-        st.dataframe(res_df)
-        st.download_button("Export CSV", res_df.to_csv(index=False), "results.csv", "text/csv")
+    try:
+        res_df = pd.DataFrame(get_sheet("Results").get_all_records())
+        if not res_df.empty:
+            st.dataframe(res_df)
+            st.download_button("Export CSV", res_df.to_csv(index=False), "results.csv", "text/csv")
+    except Exception as e:
+        st.warning("No results found or access issue.")
 
 # --- STUDENT VIEW ---
 def student_dashboard():
