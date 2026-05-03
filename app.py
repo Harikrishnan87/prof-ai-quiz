@@ -6,50 +6,65 @@ from openai import OpenAI
 from streamlit_gsheets import GSheetsConnection
 
 # --- CONFIGURATION ---
-ST_PRO_THEME = "professional"
 ADMIN_PASSWORD = "admin123"  # CHANGE THIS PASSWORD!
 
 # --- DATABASE CONNECTION ---
 def get_db_connection():
     try:
-        # This connects to Google Sheets using the secrets we will set up in Step 3
-        conn = st.connection("gsheets", type=GSheetsConnection)
-        return conn
+        return st.connection("gsheets", type=GSheetsConnection)
     except Exception as e:
-        st.error(f"Database Error: {e}")
+        st.error(f"Database Connection Error: {e}")
         return None
+
+# --- HELPER: ROBUST SAVE FUNCTION ---
+def save_to_sheet(conn, worksheet_name, new_row, expected_cols):
+    """
+    Safely reads existing data, appends new row, and writes back.
+    Forces columns to match expected list to prevent 400 Bad Request errors.
+    """
+    try:
+        # Read existing data
+        existing_data = conn.read(worksheet=worksheet_name, ttl=0)
+        
+        # Ensure it's a DataFrame even if empty
+        if existing_data is None or existing_data.empty:
+            existing_data = pd.DataFrame(columns=expected_cols)
+        
+        # Prepare the new row
+        new_df = pd.DataFrame(new_row)
+        
+        # Combine
+        updated_data = pd.concat([existing_data, new_df], ignore_index=True)
+        
+        # Ensure only expected columns exist and convert to string to avoid type errors
+        updated_data = updated_data[expected_cols].astype(str)
+        
+        # Update
+        conn.update(worksheet=worksheet_name, data=updated_data)
+        return True
+    except Exception as e:
+        st.error(f"Failed to save to '{worksheet_name}': {e}")
+        return False
 
 # --- OPENAI QUIZ GENERATION ---
 def generate_questions(topic, num_questions):
-    # This connects to OpenAI using the key we will set up in Step 3
     try:
         client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
-        
         prompt = f"""
-        Create a difficult multiple choice quiz with exactly {num_questions} questions on the topic: '{topic}'.
-        Format the output as a valid JSON object with this exact structure:
+        Create a difficult multiple choice quiz with exactly {num_questions} questions on: '{topic}'.
+        Return valid JSON only. Structure:
         {{
             "questions": [
-                {{
-                    "id": 1,
-                    "question_text": "The question?",
-                    "options": ["Option A", "Option B", "Option C", "Option D"],
-                    "correct_option": "Option A"
-                }}
+                {{"id": 1, "question_text": "...", "options": ["A", "B", "C", "D"], "correct_option": "A"}}
             ]
         }}
-        Ensure strictly valid JSON. Do not include markdown formatting like ```json.
         """
-        
         response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.7
         )
-        
-        content = response.choices[0].message.content
-        # Clean up potential markdown formatting from AI
-        content = content.replace("```json", "").replace("```", "")
+        content = response.choices[0].message.content.replace("```json", "").replace("```", "")
         return json.loads(content)
     except Exception as e:
         st.error(f"Error generating quiz: {e}")
@@ -58,152 +73,81 @@ def generate_questions(topic, num_questions):
 # --- PROFESSOR VIEW ---
 def professor_dashboard():
     st.header("👨‍🏫 Professor Dashboard")
+    conn = get_db_connection()
     
-    # Create Quiz Section
     with st.expander("Create New Quiz", expanded=True):
         topic = st.text_input("Lecture Topic")
         num_q = st.slider("Number of Questions", 1, 10, 5)
         
         if st.button("Generate & Publish Quiz"):
-            with st.spinner("Generating Questions with AI..."):
+            with st.spinner("Generating..."):
                 quiz_data = generate_questions(topic, num_q)
                 if quiz_data:
-                    conn = get_db_connection()
-                    # Prepare data
                     quiz_id = str(int(datetime.datetime.now().timestamp()))
-                    new_quiz = pd.DataFrame([{
+                    new_row = [{
                         "QuizID": quiz_id,
                         "Topic": topic,
                         "Questions": json.dumps(quiz_data),
                         "Status": "Open",
                         "Created": datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-                    }])
+                    }]
                     
-                    # Append to Google Sheet (Quizzes tab)
-                    try:
-                        existing_data = conn.read(worksheet="Quizzes", ttl=0)
-                        updated_data = pd.concat([existing_data, new_quiz], ignore_index=True)
-                        conn.update(worksheet="Quizzes", data=updated_data)
-                        st.success(f"Quiz on '{topic}' Published Successfully!")
-                        st.json(quiz_data)
-                    except Exception as e:
-                        st.error(f"Failed to save quiz. Make sure the Google Sheet is set up. Error: {e}")
+                    if save_to_sheet(conn, "Quizzes", new_row, ["QuizID", "Topic", "Questions", "Status", "Created"]):
+                        st.success("Quiz Published!")
 
-    # Manage Quizzes Section
     st.divider()
     st.subheader("Manage Active Quizzes")
-    conn = get_db_connection()
-    try:
-        quizzes = conn.read(worksheet="Quizzes", ttl=0)
-        if not quizzes.empty:
-            for index, row in quizzes.iterrows():
-                col1, col2 = st.columns([3, 1])
-                with col1:
-                    st.write(f"**{row['Topic']}** ({row['Status']})")
-                with col2:
-                    if row['Status'] == 'Open':
-                        if st.button("Close Quiz", key=f"close_{row['QuizID']}"):
-                            quizzes.at[index, 'Status'] = 'Closed'
-                            conn.update(worksheet="Quizzes", data=quizzes)
-                            st.rerun()
-                    elif row['Status'] == 'Closed':
-                         if st.button("Release Results", key=f"open_{row['QuizID']}"):
-                            quizzes.at[index, 'Status'] = 'Released'
-                            conn.update(worksheet="Quizzes", data=quizzes)
-                            st.rerun()
-    except:
-        st.write("No quizzes found yet.")
-
-    # View Results Section
-    st.divider()
-    st.subheader("Student Results")
-    try:
-        results = conn.read(worksheet="Results", ttl=0)
-        if not results.empty:
-            st.dataframe(results)
-    except:
-        st.write("No results found yet.")
+    quizzes = conn.read(worksheet="Quizzes", ttl=0)
+    if not quizzes.empty:
+        for index, row in quizzes.iterrows():
+            col1, col2 = st.columns([3, 1])
+            with col1: st.write(f"**{row['Topic']}** ({row['Status']})")
+            with col2:
+                if st.button(f"Toggle Status {row['QuizID']}", key=row['QuizID']):
+                    quizzes.at[index, 'Status'] = 'Closed' if row['Status'] == 'Open' else 'Open'
+                    conn.update(worksheet="Quizzes", data=quizzes)
+                    st.rerun()
 
 # --- STUDENT VIEW ---
 def student_dashboard():
     st.header("🎓 Student Portal")
-    
-    student_name = st.text_input("Enter your Full Name to begin:")
+    conn = get_db_connection()
+    student_name = st.text_input("Enter your Full Name:")
     
     if student_name:
-        conn = get_db_connection()
-        try:
-            quizzes = conn.read(worksheet="Quizzes", ttl=0)
-            # Filter for Open quizzes
-            open_quizzes = quizzes[quizzes['Status'] == 'Open']
-        except:
-            st.warning("Could not load quizzes.")
-            return
-
-        if not open_quizzes.empty:
-            st.subheader("Available Quizzes")
-            for index, row in open_quizzes.iterrows():
-                with st.expander(f"Take Quiz: {row['Topic']}"):
-                    st.write("Once you submit, you cannot change your answers.")
-                    if st.button(f"Start {row['Topic']}", key=f"start_{row['QuizID']}"):
-                        st.session_state['active_quiz'] = row.to_dict()
-                        st.session_state['active_quiz_data'] = json.loads(row['Questions'])
-                        st.rerun()
-        else:
-            st.info("No active quizzes at the moment.")
-
-    # Handle Active Quiz Taking
-    if 'active_quiz' in st.session_state:
-        st.divider()
-        st.subheader(f"Quiz: {st.session_state['active_quiz']['Topic']}")
-        q_data = st.session_state['active_quiz_data']
+        quizzes = conn.read(worksheet="Quizzes", ttl=0)
+        open_quizzes = quizzes[quizzes['Status'] == 'Open']
         
+        for _, row in open_quizzes.iterrows():
+            with st.expander(f"Take Quiz: {row['Topic']}"):
+                if st.button(f"Start {row['Topic']}", key=f"start_{row['QuizID']}"):
+                    st.session_state['active_quiz'] = row.to_dict()
+                    st.session_state['active_quiz_data'] = json.loads(row['Questions'])
+                    st.rerun()
+
+    if 'active_quiz' in st.session_state:
+        q_data = st.session_state['active_quiz_data']
         with st.form("quiz_form"):
-            user_answers = {}
-            for q in q_data['questions']:
-                st.write(f"**{q['id']}. {q['question_text']}**")
-                user_answers[q['id']] = st.radio("Select an option:", q['options'], key=q['id'])
-                st.write("---")
-            
-            submit = st.form_submit_button("Submit Quiz")
-            
-            if submit:
-                score = 0
-                total = len(q_data['questions'])
-                for q in q_data['questions']:
-                    if user_answers[q['id']] == q['correct_option']:
-                        score += 1
-                
-                # Save Result
-                new_result = pd.DataFrame([{
+            user_answers = {q['id']: st.radio(f"{q['id']}. {q['question_text']}", q['options']) for q in q_data['questions']}
+            if st.form_submit_button("Submit"):
+                score = sum(1 for q in q_data['questions'] if user_answers[q['id']] == q['correct_option'])
+                new_result = [{
                     "QuizID": st.session_state['active_quiz']['QuizID'],
                     "StudentName": student_name,
                     "Topic": st.session_state['active_quiz']['Topic'],
-                    "Score": score,
-                    "Total": total,
+                    "Score": str(score),
+                    "Total": str(len(q_data['questions'])),
                     "Timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-                }])
-                
-                try:
-                    results_data = conn.read(worksheet="Results", ttl=0)
-                    updated_results = pd.concat([results_data, new_result], ignore_index=True)
-                    conn.update(worksheet="Results", data=updated_results)
-                    st.success(f"Quiz Submitted! You scored {score}/{total}")
+                }]
+                if save_to_sheet(conn, "Results", new_result, ["QuizID", "StudentName", "Topic", "Score", "Total", "Timestamp"]):
+                    st.success(f"Submitted! Score: {score}/{len(q_data['questions'])}")
                     del st.session_state['active_quiz']
-                except Exception as e:
-                    st.error(f"Error saving results: {e}")
 
-# --- MAIN APP NAVIGATION ---
+# --- MAIN ---
 st.set_page_config(page_title="Lecture Quiz AI", layout="wide")
-
-st.sidebar.title("Login")
 role = st.sidebar.radio("Select Role", ["Student", "Professor"])
-
 if role == "Professor":
-    pwd = st.sidebar.text_input("Password", type="password")
-    if pwd == ADMIN_PASSWORD:
+    if st.sidebar.text_input("Password", type="password") == ADMIN_PASSWORD:
         professor_dashboard()
-    elif pwd:
-        st.sidebar.error("Incorrect Password")
 else:
     student_dashboard()
