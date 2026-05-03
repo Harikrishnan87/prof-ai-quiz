@@ -10,27 +10,33 @@ from openai import OpenAI
 
 # --- CONFIGURATION ---
 ADMIN_PASSWORD = "admin123"
-# The URL is hardcoded here, exactly as you requested
 SHEET_URL = "https://docs.google.com/spreadsheets/d/1t4JYC-O71X3bV2F0SbNrWXZvLcpNZwn_XXQ-6RGWv64/edit"
 
 # --- DATABASE CONNECTION ---
 def get_sheet(worksheet_name):
-    # This now correctly looks for [gspread_creds] in your TOML
+    # This reads credentials from secrets.toml
     creds_dict = dict(st.secrets["gspread_creds"])
     scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     client = gspread.authorize(creds)
     return client.open_by_url(SHEET_URL).worksheet(worksheet_name)
 
+# --- CALLBACK FUNCTION (Fixes the Exception) ---
+def save_profile():
+    st.session_state['profile'] = {
+        "name": st.session_state.name_in,
+        "deg": st.session_state.deg_in,
+        "strm": st.session_state.strm_in,
+        "sem": st.session_state.sem_in
+    }
+
 # --- AI PARSER ---
 def generate_questions(topic, num_q):
     try:
-        # Pulls API key from TOML
         client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
-        prompt = f"Create {num_q} MCQ questions on {topic}. Return ONLY valid JSON: {{'questions': [{{'id': 1, 'question_text': '...', 'options': ['A','B','C','D'], 'correct_option': 'A'}}]}}"
+        prompt = f"Create {num_q} MCQ questions on {topic}. JSON format: {{'questions': [{{'id': 1, 'question_text': '...', 'options': ['A','B','C','D'], 'correct_option': 'A'}}]}}"
         response = client.chat.completions.create(model="gpt-3.5-turbo", messages=[{"role": "user", "content": prompt}], temperature=0.7)
-        content = response.choices[0].message.content
-        match = re.search(r'\{.*\}', content, re.DOTALL)
+        match = re.search(r'\{.*\}', response.choices[0].message.content, re.DOTALL)
         return json.loads(match.group(0))
     except Exception as e:
         st.error(f"AI Error: {e}")
@@ -56,30 +62,22 @@ def professor_dashboard():
                 sheet.append_row([str(int(datetime.datetime.now().timestamp())), topic, deg, strm, sem, str(start_d), str(end_d), json.dumps(data), "Open", str(datetime.datetime.now())])
                 st.success("Published!")
 
-    st.subheader("Manage Results")
-    try:
-        res_df = pd.DataFrame(get_sheet("Results").get_all_records())
-        if not res_df.empty:
-            st.dataframe(res_df)
-            st.download_button("Export CSV", res_df.to_csv(index=False), "results.csv", "text/csv")
-    except Exception as e:
-        st.warning("No results found or access issue.")
-
 # --- STUDENT VIEW ---
 def student_dashboard():
     st.header("🎓 Student Portal")
     if 'profile' not in st.session_state:
-        with st.form("profile"):
-            name = st.text_input("Full Name")
-            deg = st.selectbox("Degree", ["UG", "PG"])
-            strm = st.text_input("Stream")
-            sem = st.number_input("Semester", 1, 8, 1)
-            if st.form_submit_button("Enter"):
-                st.session_state['profile'] = {"name": name, "deg": deg, "strm": strm, "sem": sem}
+        with st.form("profile_form"):
+            st.text_input("Full Name", key="name_in")
+            st.selectbox("Degree", ["UG", "PG"], key="deg_in")
+            st.text_input("Stream", key="strm_in")
+            st.number_input("Semester", 1, 8, key="sem_in")
+            # Using on_click callback instead of manual rerun
+            st.form_submit_button("Enter", on_click=save_profile)
     else:
         st.write(f"Student: {st.session_state['profile']['name']}")
         quizzes = get_sheet("Quizzes").get_all_records()
         today = datetime.date.today()
+        
         for row in quizzes:
             if row['Status'] == 'Open' and row['Degree'] == st.session_state['profile']['deg'] and row['Stream'] == st.session_state['profile']['strm'] and int(row['Semester']) == st.session_state['profile']['sem']:
                 if datetime.datetime.strptime(row['StartTime'], '%Y-%m-%d').date() <= today <= datetime.datetime.strptime(row['EndTime'], '%Y-%m-%d').date():
