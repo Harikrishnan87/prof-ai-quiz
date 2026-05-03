@@ -21,6 +21,29 @@ def get_sheet(worksheet_name):
     client = gspread.authorize(creds)
     return client.open_by_url(SHEET_URL).worksheet(worksheet_name)
 
+# --- AI PARSER ---
+def generate_questions(topic, num_q):
+    try:
+        client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+        # FORCE the AI to return only the letter (A, B, C, or D)
+        prompt = f"""
+        Create {num_q} MCQ questions on {topic}.
+        Return ONLY valid JSON in this exact structure:
+        {{
+            "questions": [
+                {{"id": 1, "question_text": "...", "options": ["A", "B", "C", "D"], "correct_option": "A"}}
+            ]
+        }}
+        IMPORTANT: 'correct_option' must be ONLY the letter (A, B, C, or D).
+        """
+        response = client.chat.completions.create(model="gpt-3.5-turbo", messages=[{"role": "user", "content": prompt}], temperature=0.5)
+        content = response.choices[0].message.content
+        match = re.search(r'\{.*\}', content, re.DOTALL)
+        return json.loads(match.group(0))
+    except Exception as e:
+        st.error(f"AI Error: {e}")
+        return None
+
 # --- CALLBACKS ---
 def save_profile():
     st.session_state['profile'] = {
@@ -29,19 +52,6 @@ def save_profile():
         "strm": st.session_state.strm_in,
         "sem": st.session_state.sem_in
     }
-
-# --- AI PARSER ---
-def generate_questions(topic, num_q):
-    try:
-        client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
-        prompt = f"Create {num_q} MCQ questions on {topic}. Return ONLY valid JSON: {{'questions': [{{'id': 1, 'question_text': '...', 'options': ['A','B','C','D'], 'correct_option': 'A'}}]}}"
-        response = client.chat.completions.create(model="gpt-3.5-turbo", messages=[{"role": "user", "content": prompt}], temperature=0.7)
-        content = response.choices[0].message.content
-        match = re.search(r'\{.*\}', content, re.DOTALL)
-        return json.loads(match.group(0))
-    except Exception as e:
-        st.error(f"AI Error: {e}")
-        return None
 
 # --- PROFESSOR VIEW ---
 def professor_dashboard():
@@ -69,8 +79,10 @@ def professor_dashboard():
         if not res_df.empty:
             st.dataframe(res_df)
             st.download_button("Export Results", res_df.to_csv(index=False), "results.csv", "text/csv")
+        else:
+            st.info("No results yet.")
     except:
-        st.info("No results yet.")
+        st.warning("Database empty or access issue.")
 
 # --- STUDENT VIEW ---
 def student_dashboard():
@@ -99,14 +111,20 @@ def student_dashboard():
     if 'active' in st.session_state:
         quiz = st.session_state['active']
         with st.form("quiz_form"):
+            # Display options and capture choice
             ans = {q['id']: st.radio(f"{q['id']}. {q['question_text']}", q['options']) for q in quiz['qs']}
+            
             if st.form_submit_button("Submit"):
-                # --- FIXED SCORING LOGIC ---
                 score = 0
                 for q in quiz['qs']:
-                    student_ans = str(ans[q['id']]).strip().lower()
-                    correct_ans = str(q['correct_option']).strip().lower()
-                    if student_ans == correct_ans:
+                    # Extract only the letter from the student's answer (e.g., 'A. Option text' -> 'A')
+                    student_raw = str(ans[q['id']])
+                    student_letter = student_raw.split('.')[0].strip() 
+                    
+                    correct_letter = str(q['correct_option']).strip()
+                    
+                    # Debug print
+                    if student_letter.lower() == correct_letter.lower():
                         score += 1
                 
                 get_sheet("Results").append_row([quiz['quiz']['QuizID'], st.session_state['profile']['name'], st.session_state['profile']['deg'], st.session_state['profile']['strm'], st.session_state['profile']['sem'], quiz['quiz']['Topic'], score, len(quiz['qs']), str(datetime.datetime.now())])
