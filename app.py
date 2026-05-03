@@ -14,14 +14,14 @@ SHEET_URL = "https://docs.google.com/spreadsheets/d/1t4JYC-O71X3bV2F0SbNrWXZvLcp
 
 # --- DATABASE CONNECTION ---
 def get_sheet(worksheet_name):
-    # This reads credentials from secrets.toml
+    # This reads credentials from secrets.toml [gspread_creds] section
     creds_dict = dict(st.secrets["gspread_creds"])
     scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     client = gspread.authorize(creds)
     return client.open_by_url(SHEET_URL).worksheet(worksheet_name)
 
-# --- CALLBACK FUNCTION (Fixes the Exception) ---
+# --- CALLBACKS (Fixes Rerun Errors) ---
 def save_profile():
     st.session_state['profile'] = {
         "name": st.session_state.name_in,
@@ -34,9 +34,10 @@ def save_profile():
 def generate_questions(topic, num_q):
     try:
         client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
-        prompt = f"Create {num_q} MCQ questions on {topic}. JSON format: {{'questions': [{{'id': 1, 'question_text': '...', 'options': ['A','B','C','D'], 'correct_option': 'A'}}]}}"
+        prompt = f"Create {num_q} MCQ questions on {topic}. Return ONLY valid JSON: {{'questions': [{{'id': 1, 'question_text': '...', 'options': ['A','B','C','D'], 'correct_option': 'A'}}]}}"
         response = client.chat.completions.create(model="gpt-3.5-turbo", messages=[{"role": "user", "content": prompt}], temperature=0.7)
-        match = re.search(r'\{.*\}', response.choices[0].message.content, re.DOTALL)
+        content = response.choices[0].message.content
+        match = re.search(r'\{.*\}', content, re.DOTALL)
         return json.loads(match.group(0))
     except Exception as e:
         st.error(f"AI Error: {e}")
@@ -62,6 +63,15 @@ def professor_dashboard():
                 sheet.append_row([str(int(datetime.datetime.now().timestamp())), topic, deg, strm, sem, str(start_d), str(end_d), json.dumps(data), "Open", str(datetime.datetime.now())])
                 st.success("Published!")
 
+    st.subheader("Manage Results")
+    try:
+        res_df = pd.DataFrame(get_sheet("Results").get_all_records())
+        if not res_df.empty:
+            st.dataframe(res_df)
+            st.download_button("Export Results", res_df.to_csv(index=False), "results.csv", "text/csv")
+    except:
+        st.info("No results yet.")
+
 # --- STUDENT VIEW ---
 def student_dashboard():
     st.header("🎓 Student Portal")
@@ -71,7 +81,6 @@ def student_dashboard():
             st.selectbox("Degree", ["UG", "PG"], key="deg_in")
             st.text_input("Stream", key="strm_in")
             st.number_input("Semester", 1, 8, key="sem_in")
-            # Using on_click callback instead of manual rerun
             st.form_submit_button("Enter", on_click=save_profile)
     else:
         st.write(f"Student: {st.session_state['profile']['name']}")
