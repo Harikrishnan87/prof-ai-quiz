@@ -4,29 +4,34 @@ import json
 import datetime
 import random
 import gspread
+import re
 from oauth2client.service_account import ServiceAccountCredentials
 from openai import OpenAI
 
 # --- CONFIGURATION ---
 ADMIN_PASSWORD = "admin123"
+# The URL is hardcoded here as requested
 SHEET_URL = "https://docs.google.com/spreadsheets/d/1t4JYC-O71X3bV2F0SbNrWXZvLcpNZwn_XXQ-6RGWv64/edit"
 
-# --- DATABASE CONNECTION ---
+# --- DATABASE CONNECTION (Using gspread) ---
 def get_sheet(worksheet_name):
-    # Load credentials from secrets
+    # This reads credentials from secrets.toml, avoiding errors
     creds_dict = dict(st.secrets["gspread_creds"])
     scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     client = gspread.authorize(creds)
     return client.open_by_url(SHEET_URL).worksheet(worksheet_name)
 
-# --- OPENAI GENERATION ---
+# --- AI PARSER ---
 def generate_questions(topic, num_q):
     try:
         client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
-        prompt = f"Create {num_q} MCQ questions on {topic}. JSON: {{'questions': [{{'id': 1, 'question_text': '...', 'options': ['A','B','C','D'], 'correct_option': 'A'}}]}}"
+        prompt = f"Create {num_q} MCQ questions on {topic}. Return ONLY valid JSON: {{'questions': [{{'id': 1, 'question_text': '...', 'options': ['A','B','C','D'], 'correct_option': 'A'}}]}}"
         response = client.chat.completions.create(model="gpt-3.5-turbo", messages=[{"role": "user", "content": prompt}], temperature=0.7)
-        return json.loads(response.choices[0].message.content.replace("```json", "").replace("```", ""))
+        # Robustly find JSON in the AI response
+        content = response.choices[0].message.content
+        match = re.search(r'\{.*\}', content, re.DOTALL)
+        return json.loads(match.group(0))
     except Exception as e:
         st.error(f"AI Error: {e}")
         return None
@@ -55,7 +60,7 @@ def professor_dashboard():
     res_df = pd.DataFrame(get_sheet("Results").get_all_records())
     if not res_df.empty:
         st.dataframe(res_df)
-        st.download_button("Export Results", res_df.to_csv(index=False), "results.csv", "text/csv")
+        st.download_button("Export CSV", res_df.to_csv(index=False), "results.csv", "text/csv")
 
 # --- STUDENT VIEW ---
 def student_dashboard():
@@ -72,7 +77,6 @@ def student_dashboard():
         st.write(f"Student: {st.session_state['profile']['name']}")
         quizzes = get_sheet("Quizzes").get_all_records()
         today = datetime.date.today()
-        
         for row in quizzes:
             if row['Status'] == 'Open' and row['Degree'] == st.session_state['profile']['deg'] and row['Stream'] == st.session_state['profile']['strm'] and int(row['Semester']) == st.session_state['profile']['sem']:
                 if datetime.datetime.strptime(row['StartTime'], '%Y-%m-%d').date() <= today <= datetime.datetime.strptime(row['EndTime'], '%Y-%m-%d').date():
