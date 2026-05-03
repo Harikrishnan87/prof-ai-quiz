@@ -8,10 +8,13 @@ from streamlit_gsheets import GSheetsConnection
 
 # --- CONFIGURATION ---
 ADMIN_PASSWORD = "admin123"
+# HARDCODED URL: This solves the "Invalid URL" error
+SHEET_URL = "https://docs.google.com/spreadsheets/d/14JYC-071X3bV2F0SbNrWXZvLcpNZn_XXQ-6RGWv64/edit"
 
 # --- DATABASE HELPERS ---
 def get_conn():
-    return st.connection("gsheets", type=GSheetsConnection)
+    # Pass the URL directly to the connection
+    return st.connection("gsheets", type=GSheetsConnection, spreadsheet=SHEET_URL)
 
 def save_to_sheet(worksheet_name, new_row, expected_cols):
     try:
@@ -29,11 +32,8 @@ def save_to_sheet(worksheet_name, new_row, expected_cols):
 def generate_questions(topic, num_q):
     try:
         client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[{"role": "user", "content": f"Create a quiz with {num_q} questions on {topic}. Return valid JSON with: {{'questions': [{{'id': 1, 'question_text': '...', 'options': ['A','B','C','D'], 'correct_option': 'A'}}]}}"}],
-            temperature=0.7
-        )
+        prompt = f"Create a difficult MCQ quiz with {num_q} questions on {topic}. Return valid JSON: {{'questions': [{{'id': 1, 'question_text': '...', 'options': ['A','B','C','D'], 'correct_option': 'A'}}]}}"
+        response = client.chat.completions.create(model="gpt-3.5-turbo", messages=[{"role": "user", "content": prompt}], temperature=0.7)
         return json.loads(response.choices[0].message.content.replace("```json", "").replace("```", ""))
     except Exception as e:
         st.error(f"AI Error: {e}")
@@ -90,11 +90,13 @@ def student_dashboard():
         today = datetime.date.today()
         
         for _, row in quizzes.iterrows():
+            # Filter by academic details
             if row['Status'] == 'Open' and row['Degree'] == st.session_state['profile']['deg'] and row['Stream'] == st.session_state['profile']['strm'] and int(row['Semester']) == st.session_state['profile']['sem']:
+                # Filter by schedule
                 if datetime.datetime.strptime(row['StartTime'], '%Y-%m-%d').date() <= today <= datetime.datetime.strptime(row['EndTime'], '%Y-%m-%d').date():
                     if st.button(f"Take {row['Topic']}"):
                         q_data = json.loads(row['Questions'])['questions']
-                        random.shuffle(q_data) # Randomize!
+                        random.shuffle(q_data) # Randomized sequence
                         st.session_state['active'] = {"quiz": row, "qs": q_data}
                         st.rerun()
 
@@ -110,5 +112,11 @@ def student_dashboard():
                 del st.session_state['active']
                 st.rerun()
 
-# --- RUN ---
-st.sidebar.radio("Role", ["Student", "Professor"]) == "Professor" and professor_dashboard() or student_dashboard()
+# --- MAIN ---
+st.set_page_config(layout="wide")
+role = st.sidebar.radio("Role", ["Student", "Professor"])
+if role == "Professor":
+    if st.sidebar.text_input("Password", type="password") == ADMIN_PASSWORD:
+        professor_dashboard()
+else:
+    student_dashboard()
