@@ -4,7 +4,6 @@ import datetime
 from openai import OpenAI
 
 # --- INITIALIZE IN-MEMORY DATA ---
-# This initializes your "database" within the app's memory
 if 'quizzes' not in st.session_state:
     st.session_state['quizzes'] = []
 if 'results' not in st.session_state:
@@ -16,9 +15,21 @@ ADMIN_PASSWORD = "admin123"
 # --- OPENAI QUIZ GENERATION ---
 def generate_questions(topic, num_questions):
     try:
-        # We still use secrets for the API key to keep your OpenAI account safe
+        # Ensure the key is available
+        if "OPENAI_API_KEY" not in st.secrets:
+            st.error("OpenAI API Key is missing in Secrets!")
+            return None
+            
         client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
-        prompt = f"Create a difficult multiple choice quiz with exactly {num_questions} questions on: '{topic}'. Return valid JSON only."
+        prompt = f"""
+        Create a difficult multiple choice quiz with exactly {num_questions} questions on: '{topic}'. 
+        Return valid JSON only in the following format:
+        {{
+            "questions": [
+                {{"id": 1, "question_text": "Sample Question?", "options": ["A", "B", "C", "D"], "correct_option": "A"}}
+            ]
+        }}
+        """
         response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=[{"role": "user", "content": prompt}],
@@ -48,13 +59,17 @@ def professor_dashboard():
                     "Created": datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
                 }
                 st.session_state['quizzes'].append(new_quiz)
-                st.success("Quiz Published!")
+                st.success(f"Quiz '{topic}' Published Successfully!")
 
     st.divider()
     st.subheader("Manage Active Quizzes")
+    if not st.session_state['quizzes']:
+        st.write("No quizzes created yet.")
+    
     for quiz in st.session_state['quizzes']:
         col1, col2 = st.columns([3, 1])
-        with col1: st.write(f"**{quiz['Topic']}** ({quiz['Status']})")
+        with col1: 
+            st.write(f"**{quiz['Topic']}** ({quiz['Status']})")
         with col2:
             btn_text = "Close" if quiz['Status'] == 'Open' else "Open"
             if st.button(btn_text, key=f"btn_{quiz['QuizID']}"):
@@ -63,33 +78,53 @@ def professor_dashboard():
 
     st.divider()
     st.subheader("Student Results")
-    st.write(st.session_state['results'])
+    if st.session_state['results']:
+        st.table(st.session_state['results'])
+    else:
+        st.write("No results yet.")
 
 # --- STUDENT VIEW ---
 def student_dashboard():
     st.header("🎓 Student Portal")
-    name = st.text_input("Enter your Full Name:")
     
-    if name:
+    # Hide name input if a quiz is active
+    if 'active' not in st.session_state:
+        name = st.text_input("Enter your Full Name:")
+    else:
+        name = "Active User"
+
+    if 'active' not in st.session_state and name:
         open_quizzes = [q for q in st.session_state['quizzes'] if q['Status'] == 'Open']
+        if not open_quizzes:
+            st.info("No active quizzes available.")
+        
         for quiz in open_quizzes:
             if st.button(f"Take Quiz: {quiz['Topic']}", key=f"take_{quiz['QuizID']}"):
                 st.session_state['active'] = quiz
+                st.session_state['student_name'] = name
                 st.rerun()
 
     if 'active' in st.session_state:
         quiz = st.session_state['active']
+        st.subheader(f"Taking Quiz: {quiz['Topic']}")
+        
         with st.form("quiz_form"):
-            q_data = quiz['Questions']['questions']
+            # Use .get() to avoid KeyError if JSON structure varies
+            q_data = quiz['Questions'].get('questions', [])
             ans = {q['id']: st.radio(f"{q['id']}. {q['question_text']}", q['options']) for q in q_data}
+            
             if st.form_submit_button("Submit"):
                 score = sum(1 for q in q_data if ans[q['id']] == q['correct_option'])
                 st.session_state['results'].append({
-                    "QuizID": quiz['QuizID'], "StudentName": name, 
-                    "Score": score, "Total": len(q_data)
+                    "QuizID": quiz['QuizID'], 
+                    "StudentName": st.session_state['student_name'], 
+                    "Score": score, 
+                    "Total": len(q_data)
                 })
-                st.success(f"Submitted! Score: {score}/{len(q_data)}")
+                st.success(f"Submitted! You scored {score}/{len(q_data)}")
                 del st.session_state['active']
+                del st.session_state['student_name']
+                st.rerun()
 
 # --- MAIN APP ---
 st.set_page_config(page_title="Lecture Quiz AI", layout="wide")
@@ -97,5 +132,7 @@ role = st.sidebar.radio("Select Role", ["Student", "Professor"])
 if role == "Professor":
     if st.sidebar.text_input("Password", type="password") == ADMIN_PASSWORD:
         professor_dashboard()
+    elif st.sidebar.text_input("Password"):
+        st.error("Incorrect Password")
 else:
     student_dashboard()
