@@ -36,7 +36,6 @@ def generate_questions(topic, num_q, api_key):
 # --- PROFESSOR VIEW ---
 def professor_dashboard(api_key):
     st.header("👨‍🏫 Professor Dashboard")
-    
     with st.expander("Create Quiz"):
         topic = st.text_input("Lecture Topic")
         col1, col2, col3 = st.columns(3)
@@ -69,6 +68,8 @@ def professor_dashboard(api_key):
 # --- STUDENT VIEW ---
 def student_dashboard():
     st.header("🎓 Student Portal")
+    
+    # Session state initialization
     if 'profile' not in st.session_state:
         with st.form("profile"):
             name = st.text_input("Full Name")
@@ -77,9 +78,10 @@ def student_dashboard():
             sem = st.number_input("Semester", 1, 8, 1)
             if st.form_submit_button("Enter"):
                 st.session_state['profile'] = {"name": name, "deg": deg, "strm": strm, "sem": sem}
-                st.rerun()
-    else:
-        st.write(f"Student: {st.session_state['profile']['name']}")
+    
+    # If profile exists, show quiz
+    if 'profile' in st.session_state:
+        st.write(f"Welcome, {st.session_state['profile']['name']}")
         quizzes = load_csv(QUIZ_FILE, ["QuizID", "Topic", "Degree", "Stream", "Semester", "StartTime", "EndTime", "Questions", "Status"])
         today = datetime.date.today()
         
@@ -87,14 +89,16 @@ def student_dashboard():
             if row['Status'] == 'Open' and row['Degree'] == st.session_state['profile']['deg'] and row['Stream'] == st.session_state['profile']['strm'] and int(row['Semester']) == st.session_state['profile']['sem']:
                 if datetime.datetime.strptime(row['StartTime'], '%Y-%m-%d').date() <= today <= datetime.datetime.strptime(row['EndTime'], '%Y-%m-%d').date():
                     if st.button(f"Take {row['Topic']}"):
+                        import json
                         q_data = json.loads(row['Questions'])['questions']
                         random.shuffle(q_data)
                         st.session_state['active'] = {"quiz": row, "qs": q_data}
                         st.rerun()
 
+    # Quiz Interface
     if 'active' in st.session_state:
         quiz = st.session_state['active']
-        with st.form("quiz"):
+        with st.form("quiz_form"):
             ans = {q['id']: st.radio(f"{q['id']}. {q['question_text']}", q['options']) for q in quiz['qs']}
             if st.form_submit_button("Submit"):
                 score = sum(1 for q in quiz['qs'] if ans[q['id']] == q['correct_option'])
@@ -107,6 +111,7 @@ def student_dashboard():
 
 # --- MAIN ---
 st.set_page_config(layout="wide")
+# Using sidebar for key so you don't need Secrets.toml
 api_key = st.sidebar.text_input("OpenAI API Key", type="password")
 role = st.sidebar.radio("Role", ["Student", "Professor"])
 if role == "Professor":
