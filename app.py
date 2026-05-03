@@ -21,7 +21,7 @@ def get_sheet(worksheet_name):
     client = gspread.authorize(creds)
     return client.open_by_url(SHEET_URL).worksheet(worksheet_name)
 
-# --- CALLBACKS (Fixes Rerun Errors) ---
+# --- CALLBACKS ---
 def save_profile():
     st.session_state['profile'] = {
         "name": st.session_state.name_in,
@@ -101,9 +101,16 @@ def student_dashboard():
         with st.form("quiz_form"):
             ans = {q['id']: st.radio(f"{q['id']}. {q['question_text']}", q['options']) for q in quiz['qs']}
             if st.form_submit_button("Submit"):
-                score = sum(1 for q in quiz['qs'] if ans[q['id']] == q['correct_option'])
+                # --- FIXED SCORING LOGIC ---
+                score = 0
+                for q in quiz['qs']:
+                    student_ans = str(ans[q['id']]).strip().lower()
+                    correct_ans = str(q['correct_option']).strip().lower()
+                    if student_ans == correct_ans:
+                        score += 1
+                
                 get_sheet("Results").append_row([quiz['quiz']['QuizID'], st.session_state['profile']['name'], st.session_state['profile']['deg'], st.session_state['profile']['strm'], st.session_state['profile']['sem'], quiz['quiz']['Topic'], score, len(quiz['qs']), str(datetime.datetime.now())])
-                st.success("Submitted!")
+                st.success(f"Submitted! Score: {score}/{len(quiz['qs'])}")
                 del st.session_state['active']
                 st.rerun()
 
