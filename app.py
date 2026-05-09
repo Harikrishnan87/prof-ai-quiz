@@ -32,7 +32,7 @@ def extract_text_from_file(uploaded_file):
         return ""
 
 def parse_syllabus_to_structure(text):
-    """Identifies Units and topics while filtering administrative noise [cite: 5-21]."""
+    """Parses text into units and removes administrative noise [cite: 1, 5-21]."""
     noise_patterns = [r'L T P C', r'P18PECS\d+', r'Total Contact Hours', r'Prerequisite:', r'COURSE OUTCOMES', r'TOTAL NO OF PERIODS']
     header_pattern = r'(?im)^(?:Unit|Module|Chapter|Part)\s*(?:[IVX\d]+|One|Two|Three|Four|Five|Six|Seven|Eight|Nine|Ten)[:.-]?\s*(.*)'
     lines = text.split('\n')
@@ -170,16 +170,32 @@ def student_dashboard():
     else:
         profile = st.session_state['profile']
         st.write(f"Logged in: {profile['name']}")
-        sheet = get_sheet("Quizzes")
-        if sheet:
-            quizzes = sheet.get_all_records()
+        
+        quiz_sheet = get_sheet("Quizzes")
+        res_sheet = get_sheet("Results")
+        
+        if quiz_sheet and res_sheet:
+            quizzes = quiz_sheet.get_all_records()
+            results = res_sheet.get_all_records()
+            
+            # Map of already submitted quizzes for this student
+            submitted_keys = {(r['Name'], str(r['QuizID'])) for r in results}
+
             for row in quizzes:
                 if str(row['Degree']) == profile['deg'] and str(row['Stream']).strip().lower() == profile['strm'].strip().lower() and int(row['Semester']) == profile['sem']:
                     with st.container(border=True):
                         st.write(f"**{row['Topic']}**")
-                        if st.button("Start Quiz", key=f"start_{row['QuizID']}"):
-                            st.session_state['active_quiz'] = row
-                            st.rerun()
+                        
+                        # Retake Prevention Logic
+                        if (profile['name'], str(row['QuizID'])) in submitted_keys:
+                            st.success("✅ Assessment Submitted")
+                            # Retrieve and show score
+                            p_score = next(r['Score'] for r in results if r['Name'] == profile['name'] and str(r['QuizID']) == str(row['QuizID']))
+                            st.info(f"Recorded Score: {p_score}")
+                        else:
+                            if st.button("Start Quiz", key=f"start_{row['QuizID']}"):
+                                st.session_state['active_quiz'] = row
+                                st.rerun()
 
     if 'active_quiz' in st.session_state:
         quiz_data = json.loads(st.session_state['active_quiz']['Questions'])
@@ -191,6 +207,7 @@ def student_dashboard():
                 get_sheet("Results").append_row([st.session_state['active_quiz']['QuizID'], profile['name'], profile['deg'], profile['strm'], profile['sem'], st.session_state['active_quiz']['Topic'], score, len(quiz_data['questions']), str(datetime.datetime.now())])
                 st.success(f"Final Score: {score}/{len(quiz_data['questions'])}")
                 del st.session_state['active_quiz']
+                st.rerun() # Refresh to lock the attempt
 
 # --- MAIN ---
 st.set_page_config(layout="wide")
