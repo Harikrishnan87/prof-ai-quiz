@@ -211,4 +211,48 @@ def student_dashboard():
                     if row['Status'] == 'Open' and match_deg and match_strm and match_sem:
                         start = datetime.datetime.strptime(str(row['StartTime']), '%Y-%m-%d').date()
                         end = datetime.datetime.strptime(str(row['EndTime']), '%Y-%m-%d').date()
-                        if start <= today <= end
+                        if start <= today <= end:
+                            available.append(row)
+
+                if available:
+                    for quiz in available:
+                        with st.container(border=True):
+                            st.write(f"**Quiz Topic:** {quiz['Topic']}")
+                            if st.button(f"Take Quiz", key=f"tk_{quiz['QuizID']}"):
+                                st.session_state['active_quiz'] = quiz
+                                st.rerun()
+                else:
+                    st.info("No active quizzes found for your profile.")
+        except Exception as e:
+            st.error(f"Error loading quizzes: {e}")
+
+    if 'active_quiz' in st.session_state:
+        quiz = st.session_state['active_quiz']
+        q_list = json.loads(quiz['Questions'])['questions']
+        with st.form("take_quiz"):
+            st.subheader(quiz['Topic'])
+            user_ans = {}
+            for q in q_list:
+                st.write(f"**{q['question_text']}**")
+                user_ans[q['id']] = st.radio("Options:", q['options'], key=f"ans_{q['id']}", label_visibility="collapsed")
+            
+            if st.form_submit_button("Submit Quiz"):
+                score = sum(1 for q in q_list if user_ans[q['id']][0] == q['correct_option'])
+                res_sheet = get_sheet("Results")
+                if res_sheet:
+                    res_sheet.append_row([quiz['QuizID'], profile['name'], profile['deg'], profile['strm'], profile['sem'], quiz['Topic'], score, len(q_list), str(datetime.datetime.now())])
+                    st.success(f"Submitted! Score: {score}/{len(q_list)}")
+                    del st.session_state['active_quiz']
+
+# --- MAIN ---
+st.set_page_config(layout="wide")
+role = st.sidebar.selectbox("Access Level", ["Student", "Professor"])
+
+if role == "Professor":
+    pwd = st.sidebar.text_input("Enter Admin Password", type="password")
+    if pwd == ADMIN_PASSWORD:
+        professor_dashboard()
+    elif pwd:
+        st.sidebar.error("Invalid Password")
+else:
+    student_dashboard()
