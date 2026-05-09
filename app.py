@@ -32,6 +32,7 @@ def extract_text_from_file(uploaded_file):
         return ""
 
 def parse_syllabus_to_structure(text):
+    """Identifies Units and topics while filtering administrative noise [cite: 1, 5-21]."""
     noise_patterns = [r'L T P C', r'P18PECS\d+', r'Total Contact Hours', r'Prerequisite:', r'COURSE OUTCOMES', r'TOTAL NO OF PERIODS']
     header_pattern = r'(?im)^(?:Unit|Module|Chapter|Part)\s*(?:[IVX\d]+|One|Two|Three|Four|Five|Six|Seven|Eight|Nine|Ten)[:.-]?\s*(.*)'
     lines = text.split('\n')
@@ -112,7 +113,6 @@ def professor_dashboard():
                 if selected_topics:
                     st.session_state['staging_quiz'] = generate_questions_ai(selected_topics, num_q, bloom_level)
                     st.session_state['current_bloom'] = bloom_level
-                    st.session_state['selected_topics_count'] = len(selected_topics)
                 else:
                     st.warning("Please select topics.")
 
@@ -127,40 +127,22 @@ def professor_dashboard():
                 new_correct = st.selectbox("Correct Option", ["A", "B", "C", "D"], index=["A","B","C","D"].index(q['correct_option']), key=f"edit_c_{i}")
                 edited_questions.append({"id": i+1, "question_text": new_text, "options": new_opts, "correct_option": new_correct})
 
-        # --- SCHEDULE DATE FEATURE ADDED HERE ---
         with st.expander("📅 3. Schedule & Settings", expanded=True):
             col1, col2, col3 = st.columns(3)
-            deg = col1.selectbox("Degree", ["UG", "PG"])
-            strm = col2.text_input("Stream (e.g., CSE)")
-            sem = col3.number_input("Semester", 1, 8, 1)
-
+            deg, strm, sem = col1.selectbox("Degree", ["UG", "PG"]), col2.text_input("Stream"), col3.number_input("Semester", 1, 8, 1)
             c1, c2 = st.columns(2)
-            start_date = c1.date_input("Start Date (Quiz becomes visible)", datetime.date.today())
-            end_date = c2.date_input("End Date (Quiz expires)", datetime.date.today() + datetime.timedelta(days=7))
-            
+            start_date = c1.date_input("Start Date", datetime.date.today())
+            end_date = c2.date_input("End Date", datetime.date.today() + datetime.timedelta(days=7))
             time_limit = st.number_input("Time per Question (Seconds)", 10, 120, 30)
 
-        if st.button("🚀 Confirm & Publish Officially", use_container_width=True):
-            if not strm:
-                st.error("Please enter a Stream name.")
-            else:
-                final_quiz = {"questions": edited_questions, "time_limit": time_limit}
-                sheet = get_sheet("Quizzes")
-                if sheet:
-                    # Storing StartDate and EndDate in the Google Sheet
-                    sheet.append_row([
-                        str(int(time.time())), 
-                        f"Quiz: {st.session_state['current_bloom']}", 
-                        deg, strm, sem, 
-                        str(start_date), str(end_date), 
-                        json.dumps(final_quiz), 
-                        "Open", 
-                        str(datetime.datetime.now())
-                    ])
-                    st.success(f"Quiz Published! Scheduled for {start_date} to {end_date}")
-                    st.session_state['staging_quiz'] = None
+        if st.button("🚀 Confirm & Publish Officially"):
+            final_quiz = {"questions": edited_questions, "time_limit": time_limit}
+            sheet = get_sheet("Quizzes")
+            if sheet:
+                sheet.append_row([str(int(time.time())), st.session_state['current_bloom'], deg, strm, sem, str(start_date), str(end_date), json.dumps(final_quiz), "Open", str(datetime.datetime.now())])
+                st.success("Quiz Published!")
+                st.session_state['staging_quiz'] = None
 
-    # --- MANAGE RESULTS ---
     st.divider()
     st.subheader("📊 Manage Results & Class Analytics")
     try:
@@ -171,9 +153,10 @@ def professor_dashboard():
                 df = pd.DataFrame(res_data)
                 st.dataframe(df, use_container_width=True)
                 st.markdown("### 🔍 Knowledge Gap Analysis")
-                unit_perf = df.groupby('Topic')['Score'].mean().sort_values()
-                if not unit_perf.empty:
-                    st.error(f"🚨 **Critical Weakness Identified:** Students are struggling most with **'{unit_perf.index[0]}'**.")
+                unit_performance = df.groupby('Topic')['Score'].mean().sort_values()
+                if not unit_performance.empty:
+                    st.error(f"🚨 **Critical Weakness Identified:** Students are struggling most with **'{unit_performance.index[0]}'**.")
+                st.download_button("📥 Export CSV", df.to_csv(index=False), "results.csv", "text/csv")
     except Exception: st.info("Results pending.")
 
 # --- STUDENT VIEW ---
@@ -184,9 +167,7 @@ def student_dashboard():
     if 'profile' not in st.session_state:
         with st.form("login"):
             name = st.text_input("Full Name")
-            deg = st.selectbox("Degree", ["UG", "PG"])
-            strm = st.text_input("Stream")
-            sem = st.number_input("Semester", 1, 8)
+            deg, strm, sem = st.selectbox("Degree", ["UG", "PG"]), st.text_input("Stream"), st.number_input("Semester", 1, 8)
             if st.form_submit_button("Enter Portal"):
                 st.session_state['profile'] = {"name": name, "deg": deg, "strm": strm, "sem": sem}
                 st.rerun()
@@ -200,16 +181,22 @@ def student_dashboard():
         if quiz_sheet and res_sheet:
             quizzes = quiz_sheet.get_all_records()
             results = res_sheet.get_all_records()
-            submitted_keys = {(r['Name'], str(r['QuizID'])) for r in results}
             today = datetime.date.today()
+            
+            # FIX: Using 'StudentName' to match your results sheet header and added error safety
+            submitted_keys = set()
+            for r in results:
+                s_name = r.get('StudentName') or r.get('Name') or ""
+                q_id = str(r.get('QuizID') or "")
+                if s_name and q_id:
+                    submitted_keys.add((s_name, q_id))
 
             for row in quizzes:
-                # 1. Match profile criteria
+                # Filter by profile and Schedule Dates
                 match_p = (str(row['Degree']) == profile['deg'] and 
                            str(row['Stream']).strip().lower() == profile['strm'].strip().lower() and 
                            int(row['Semester']) == profile['sem'])
                 
-                # 2. Match Schedule Dates
                 start_dt = datetime.datetime.strptime(str(row['StartTime']), '%Y-%m-%d').date()
                 end_dt = datetime.datetime.strptime(str(row['EndTime']), '%Y-%m-%d').date()
                 is_active = (start_dt <= today <= end_dt)
@@ -223,8 +210,6 @@ def student_dashboard():
                             if st.button("Start Quiz", key=f"start_{row['QuizID']}"):
                                 st.session_state['active_quiz'] = row
                                 st.rerun()
-                elif match_p and not is_active and today < start_dt:
-                    st.info(f"Upcoming Quiz: **{row['Topic']}** (Available on {start_dt})")
 
     if 'active_quiz' in st.session_state:
         quiz_data = json.loads(st.session_state['active_quiz']['Questions'])
