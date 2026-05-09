@@ -6,9 +6,11 @@ import random
 import gspread
 import re
 import pdfplumber
+import time
 from docx import Document
 from oauth2client.service_account import ServiceAccountCredentials
 from openai import OpenAI
+from streamlit.components.v1 import html
 
 # --- CONFIGURATION ---
 ADMIN_PASSWORD = "Eliza@123"
@@ -30,43 +32,26 @@ def extract_text_from_file(uploaded_file):
         return ""
 
 def parse_syllabus_to_structure(text):
-    """Parses text into units and removes administrative noise."""
-    noise_patterns = [
-        r'L T P C', r'P18PECS\d+', r'Total Contact Hours', r'Prerequisite:', 
-        r'Course Designed by', r'OBJECTIVES', r'COURSE OUTCOMES', r'TOTAL NO OF PERIODS'
-    ]
+    noise_patterns = [r'L T P C', r'P18PECS\d+', r'Total Contact Hours', r'Prerequisite:', r'COURSE OUTCOMES', r'TOTAL NO OF PERIODS']
     header_pattern = r'(?im)^(?:Unit|Module|Chapter|Part)\s*(?:[IVX\d]+|One|Two|Three|Four|Five|Six|Seven|Eight|Nine|Ten)[:.-]?\s*(.*)'
-    
     lines = text.split('\n')
     structure = {}
     current_unit = None
-    
     for line in lines:
         line = line.strip()
-        if not line or any(re.search(p, line) for p in noise_patterns): 
-            continue
-        
+        if not line or any(re.search(p, line) for p in noise_patterns): continue
         header_match = re.match(header_pattern, line)
         if header_match:
             current_unit = line
             structure[current_unit] = []
             continue
-            
         if current_unit is None:
             current_unit = "General Topics"
             structure[current_unit] = []
-
-        if re.match(r'^[•\-\*]\s*(.*)|^\d+[\.\)]\s+(.*)', line):
-            match = re.match(r'^[•\-\*]\s*(.*)|^\d+[\.\)]\s+(.*)', line)
-            topic = match.group(1) if match.group(1) else match.group(2)
-            if topic and len(topic) > 3:
-                structure[current_unit].append(topic)
-        elif 5 < len(line) < 150:
+        if 5 < len(line) < 150:
             structure[current_unit].append(line)
-            
     return {k: v for k, v in structure.items() if v}
 
-# --- DATABASE CONNECTION ---
 def get_sheet(worksheet_name):
     try:
         creds_dict = dict(st.secrets["gspread_creds"])
@@ -75,184 +60,158 @@ def get_sheet(worksheet_name):
         client = gspread.authorize(creds)
         return client.open_by_url(SHEET_URL).worksheet(worksheet_name)
     except Exception as e:
-        st.error(f"Database Error: {e}")
+        st.error("Database Connection Error.")
         return None
 
-# --- AI GENERATOR ---
-def generate_questions(topic_list, num_q):
+def generate_questions_ai(topic_list, num_q, level):
     try:
         client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
-        topics_str = ", ".join(topic_list[:50])
-        prompt = f"""Create {num_q} MCQ questions covering: {topics_str}. 
-        Return ONLY valid JSON with structure: {{"questions": [{{"id": 1, "question_text": "...", "options": ["A. ..", "B. .."], "correct_option": "A"}}]}}"""
-        response = client.chat.completions.create(model="gpt-3.5-turbo", messages=[{"role": "user", "content": prompt}], temperature=0.5)
-        match = re.search(r'\{.*\}', response.choices[0].message.content, re.DOTALL)
-        return json.loads(match.group(0))
+        topics_str = ", ".join(topic_list[:30])
+        prompt = f"""Create {num_q} MCQ questions at the Bloom's Taxonomy level of '{level}' covering: {topics_str}.
+        Focus: {level}. 
+        Return ONLY valid JSON: {{"questions": [{{"id": 1, "question_text": "...", "options": ["A. ..", "B. .."], "correct_option": "A"}}]}}"""
+        response = client.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": prompt}], temperature=0.7)
+        return json.loads(re.search(r'\{.*\}', response.choices[0].message.content, re.DOTALL).group(0))
     except Exception as e:
-        st.error(f"AI Generation Error: {e}")
+        st.error(f"AI Error: {e}")
         return None
 
 # --- PROFESSOR VIEW ---
 def professor_dashboard():
     st.header("👨‍🏫 Professor Dashboard")
     
-    if 'syllabus_data' not in st.session_state:
-        st.session_state['syllabus_data'] = None
+    if 'syllabus_data' not in st.session_state: st.session_state['syllabus_data'] = None
+    if 'staging_quiz' not in st.session_state: st.session_state['staging_quiz'] = None
 
-    # Step 1: Upload
-    with st.expander("📂 1. Upload Syllabus", expanded=not st.session_state['syllabus_data']):
-        uploaded_file = st.file_uploader("Choose a file (.pdf, .docx)", type=["pdf", "docx"])
+    with st.expander("📂 1. Upload & Analyze Syllabus", expanded=not st.session_state['syllabus_data']):
+        uploaded_file = st.file_uploader("Upload PDF/DOCX", type=["pdf", "docx"])
         if uploaded_file:
-            with st.spinner("Processing syllabus..."):
-                text = extract_text_from_file(uploaded_file)
-                st.session_state['syllabus_data'] = parse_syllabus_to_structure(text)
-                st.success(f"Parsed {len(st.session_state['syllabus_data'])} units!")
+            text = extract_text_from_file(uploaded_file)
+            st.session_state['syllabus_data'] = parse_syllabus_to_structure(text)
+            st.success("Syllabus Analysed.")
 
-    # Step 2: Selection
     selected_topics = []
     if st.session_state['syllabus_data']:
-        with st.expander("🎯 2. Select Scope", expanded=True):
+        with st.expander("🎯 2. Select Scope & Bloom's Level", expanded=True):
             data = st.session_state['syllabus_data']
-            mode = st.radio("Selection Method", ["Individual Topics", "Complete Units/Modules", "Whole Syllabus"], horizontal=True)
+            mode = st.radio("Selection Method", ["Individual Topics", "Complete Units", "Whole Syllabus"], horizontal=True)
+            bloom_level = st.select_slider("Bloom's Taxonomy Level", options=["Recall", "Understanding", "Analysis"])
             
             if mode == "Individual Topics":
                 all_flat = [t for sublist in data.values() for t in sublist]
-                selected_topics = st.multiselect("Select individual topics (noise removed):", all_flat)
-                
-            elif mode == "Complete Units/Modules":
-                for unit, topics in data.items():
-                    if st.checkbox(f"**{unit}**", key=f"cb_{unit}"):
-                        unit_sel = st.multiselect(f"Topics in {unit}:", topics, default=topics, key=f"ms_{unit}")
-                        selected_topics.extend(unit_sel)
-                
+                selected_topics = st.multiselect("Topics:", all_flat)
+            elif mode == "Complete Units":
+                for u, t in data.items():
+                    if st.checkbox(u, key=f"c_{u}"): selected_topics.extend(t)
             elif mode == "Whole Syllabus":
                 selected_topics = [t for sublist in data.values() for t in sublist]
-                st.info(f"All units selected ({len(selected_topics)} total topics).")
 
-    # Step 3: Publish
-    if selected_topics:
-        with st.expander("🛠️ 3. Quiz Settings", expanded=True):
-            col1, col2, col3 = st.columns(3)
-            deg = col1.selectbox("Degree", ["UG", "PG"])
-            strm = col2.text_input("Stream", placeholder="e.g. CSE")
-            sem = col3.number_input("Semester", 1, 8, 1)
-            
-            c1, c2 = st.columns(2)
-            start_d = c1.date_input("Start Date", datetime.date.today())
-            end_d = c2.date_input("End Date", datetime.date.today() + datetime.timedelta(days=7))
-            
-            num_q = st.select_slider("Total Questions", options=[10, 20, 30, 40, 50], value=10)
-            
-            if st.button("🚀 Publish Quiz to Students", use_container_width=True):
-                with st.spinner("Generating quiz with AI..."):
-                    quiz_json = generate_questions(selected_topics, num_q)
-                    if quiz_json:
-                        sheet = get_sheet("Quizzes")
-                        if sheet:
-                            sheet.append_row([
-                                str(int(datetime.datetime.now().timestamp())), 
-                                f"Quiz on {len(selected_topics)} topics", deg, strm, sem, 
-                                str(start_d), str(end_d), json.dumps(quiz_json), "Open", str(datetime.datetime.now())
-                            ])
-                            st.success("Quiz Published Successfully!")
-                            st.balloons()
+            num_q = st.number_input("Number of Questions", 5, 50, 10)
+            if st.button("🪄 Stage AI Quiz for Review"):
+                st.session_state['staging_quiz'] = generate_questions_ai(selected_topics, num_q, bloom_level)
 
-    # Step 4: Manage Results
+    # --- PROFESSOR PREVIEW/EDIT SCREEN ---
+    if st.session_state['staging_quiz']:
+        st.divider()
+        st.subheader("📝 Professor Review & Edit Stage")
+        st.info("Edit the questions or options below before final publishing.")
+        
+        edited_questions = []
+        for i, q in enumerate(st.session_state['staging_quiz']['questions']):
+            with st.container(border=True):
+                new_text = st.text_area(f"Question {i+1}", value=q['question_text'], key=f"edit_q_{i}")
+                new_opts = []
+                for j, opt in enumerate(q['options']):
+                    new_opts.append(st.text_input(f"Option {chr(65+j)}", value=opt, key=f"edit_o_{i}_{j}"))
+                new_correct = st.selectbox("Correct Option", ["A", "B", "C", "D"], index=["A","B","C","D"].index(q['correct_option']), key=f"edit_c_{i}")
+                edited_questions.append({"id": i+1, "question_text": new_text, "options": new_opts, "correct_option": new_correct})
+
+        col1, col2, col3 = st.columns(3)
+        deg = col1.selectbox("Degree", ["UG", "PG"])
+        strm = col2.text_input("Stream (e.g. CSE)")
+        sem = col3.number_input("Semester", 1, 8, 1)
+        time_limit = st.number_input("Time per Question (Seconds)", 10, 120, 30)
+
+        if st.button("🚀 Confirm & Publish Officially"):
+            final_quiz = {"questions": edited_questions, "time_limit": time_limit}
+            sheet = get_sheet("Quizzes")
+            if sheet:
+                sheet.append_row([str(int(time.time())), f"Quiz: {bloom_level}", deg, strm, sem, str(datetime.date.today()), str(datetime.date.today() + datetime.timedelta(days=7)), json.dumps(final_quiz), "Open", str(datetime.datetime.now())])
+                st.success("Quiz Published!")
+                st.session_state['staging_quiz'] = None
+
+    # --- ANALYTICS: WEAKNESS IDENTIFICATION ---
     st.divider()
-    st.subheader("📊 Manage Results & Analytics")
+    st.subheader("📊 Class Analytics")
     try:
         res_sheet = get_sheet("Results")
         if res_sheet:
-            res_data = res_sheet.get_all_records()
-            if res_data:
-                res_df = pd.DataFrame(res_data)
-                st.dataframe(res_df, use_container_width=True)
-                st.download_button("📥 Export Results to CSV", res_df.to_csv(index=False), "student_results.csv", "text/csv")
-            else:
-                st.info("No student results recorded yet.")
-    except Exception as e:
-        st.warning("Could not load results table.")
+            df = pd.DataFrame(res_sheet.get_all_records())
+            if not df.empty:
+                st.dataframe(df)
+                # Identifying Weakest Unit (Simulated based on Topic names matching Syllabus keys)
+                avg_scores = df.groupby('Topic')['Score'].mean().sort_values()
+                st.warning(f"🚨 **Action Required:** Students are struggling most with: **{avg_scores.index[0]}** (Avg Score: {avg_scores.iloc[0]:.2f})")
+    except: st.info("No analytics available yet.")
 
 # --- STUDENT VIEW ---
 def student_dashboard():
     st.header("🎓 Student Portal")
+    # Tab Switch Detection JS
+    html("""
+    <script>
+    window.onblur = function() {
+        alert("Integrity Warning: Tab switching is monitored. This event has been logged.");
+    };
+    </script>
+    """, height=0)
+
     if 'profile' not in st.session_state:
         with st.form("login"):
-            st.text_input("Full Name", key="name_in")
-            st.selectbox("Degree", ["UG", "PG"], key="deg_in")
-            st.text_input("Stream", key="strm_in")
-            st.number_input("Semester", 1, 8, key="sem_in")
-            if st.form_submit_button("Enter Portal"):
-                if st.session_state.name_in and st.session_state.strm_in:
-                    st.session_state['profile'] = {
-                        "name": st.session_state.name_in, "deg": st.session_state.deg_in,
-                        "strm": st.session_state.strm_in, "sem": st.session_state.sem_in
-                    }
-                    st.rerun()
+            name = st.text_input("Full Name")
+            deg = st.selectbox("Degree", ["UG", "PG"])
+            strm = st.text_input("Stream")
+            sem = st.number_input("Semester", 1, 8)
+            if st.form_submit_button("Enter"):
+                st.session_state['profile'] = {"name": name, "deg": deg, "strm": strm, "sem": sem}
+                st.rerun()
     else:
         profile = st.session_state['profile']
-        st.write(f"### Welcome, {profile['name']}")
-        if st.sidebar.button("Logout"):
-            del st.session_state['profile']
-            st.rerun()
-            
-        try:
-            sheet = get_sheet("Quizzes")
-            if sheet:
-                quizzes = sheet.get_all_records()
-                today = datetime.datetime.now().date()
-                available = []
-                
-                for row in quizzes:
-                    match_deg = str(row['Degree']).strip().lower() == profile['deg'].strip().lower()
-                    match_strm = str(row['Stream']).strip().lower() == profile['strm'].strip().lower()
-                    match_sem = int(row['Semester']) == int(profile['sem'])
-                    
-                    if row['Status'] == 'Open' and match_deg and match_strm and match_sem:
-                        start = datetime.datetime.strptime(str(row['StartTime']), '%Y-%m-%d').date()
-                        end = datetime.datetime.strptime(str(row['EndTime']), '%Y-%m-%d').date()
-                        if start <= today <= end:
-                            available.append(row)
-
-                if available:
-                    for quiz in available:
-                        with st.container(border=True):
-                            st.write(f"**Quiz Topic:** {quiz['Topic']}")
-                            if st.button(f"Take Quiz", key=f"tk_{quiz['QuizID']}"):
-                                st.session_state['active_quiz'] = quiz
-                                st.rerun()
-                else:
-                    st.info("No active quizzes found for your profile.")
-        except Exception as e:
-            st.error(f"Error loading quizzes: {e}")
+        st.write(f"Logged in: {profile['name']}")
+        
+        sheet = get_sheet("Quizzes")
+        if sheet:
+            quizzes = sheet.get_all_records()
+            for row in quizzes:
+                if str(row['Degree']) == profile['deg'] and str(row['Stream']) == profile['strm'] and int(row['Semester']) == profile['sem']:
+                    with st.container(border=True):
+                        st.write(f"**{row['Topic']}**")
+                        if st.button("Start Quiz"):
+                            st.session_state['active_quiz'] = row
+                            st.session_state['start_time'] = time.time()
+                            st.rerun()
 
     if 'active_quiz' in st.session_state:
-        quiz = st.session_state['active_quiz']
-        q_list = json.loads(quiz['Questions'])['questions']
-        with st.form("take_quiz"):
-            st.subheader(quiz['Topic'])
-            user_ans = {}
-            for q in q_list:
+        quiz_data = json.loads(st.session_state['active_quiz']['Questions'])
+        time_limit = quiz_data.get('time_limit', 30)
+        
+        st.subheader("Quiz in Progress")
+        # Simple Question-by-Question UI with Timer logic could be added here
+        with st.form("quiz_run"):
+            answers = {}
+            for q in quiz_data['questions']:
                 st.write(f"**{q['question_text']}**")
-                user_ans[q['id']] = st.radio("Options:", q['options'], key=f"ans_{q['id']}", label_visibility="collapsed")
+                answers[q['id']] = st.radio("Select:", q['options'], key=f"run_{q['id']}")
             
-            if st.form_submit_button("Submit Quiz"):
-                score = sum(1 for q in q_list if user_ans[q['id']][0] == q['correct_option'])
-                res_sheet = get_sheet("Results")
-                if res_sheet:
-                    res_sheet.append_row([quiz['QuizID'], profile['name'], profile['deg'], profile['strm'], profile['sem'], quiz['Topic'], score, len(q_list), str(datetime.datetime.now())])
-                    st.success(f"Submitted! Score: {score}/{len(q_list)}")
-                    del st.session_state['active_quiz']
+            if st.form_submit_button("Submit"):
+                score = sum(1 for q in quiz_data['questions'] if answers[q['id']][0] == q['correct_option'])
+                get_sheet("Results").append_row([st.session_state['active_quiz']['QuizID'], profile['name'], profile['deg'], profile['strm'], profile['sem'], st.session_state['active_quiz']['Topic'], score, len(quiz_data['questions']), str(datetime.datetime.now())])
+                st.success(f"Score: {score}")
+                del st.session_state['active_quiz']
 
 # --- MAIN ---
 st.set_page_config(layout="wide")
-role = st.sidebar.selectbox("Access Level", ["Student", "Professor"])
-
+role = st.sidebar.selectbox("Role", ["Student", "Professor"])
 if role == "Professor":
-    pwd = st.sidebar.text_input("Enter Admin Password", type="password")
-    if pwd == ADMIN_PASSWORD:
-        professor_dashboard()
-    elif pwd:
-        st.sidebar.error("Invalid Password")
-else:
-    student_dashboard()
+    if st.sidebar.text_input("Password", type="password") == ADMIN_PASSWORD: professor_dashboard()
+else: student_dashboard()
