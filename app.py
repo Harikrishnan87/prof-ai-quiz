@@ -30,12 +30,11 @@ def extract_text_from_file(uploaded_file):
         return ""
 
 def parse_syllabus_to_structure(text):
-    """Parses text into units and removes administrative noise[cite: 1, 5, 7, 15, 19]."""
+    """Parses text into units and removes administrative noise."""
     noise_patterns = [
         r'L T P C', r'P18PECS\d+', r'Total Contact Hours', r'Prerequisite:', 
         r'Course Designed by', r'OBJECTIVES', r'COURSE OUTCOMES', r'TOTAL NO OF PERIODS'
     ]
-    # Detects headers like "UNIT 1 ARTIFICIAL NEURAL NETWORKS" [cite: 5]
     header_pattern = r'(?im)^(?:Unit|Module|Chapter|Part)\s*(?:[IVX\d]+|One|Two|Three|Four|Five|Six|Seven|Eight|Nine|Ten)[:.-]?\s*(.*)'
     
     lines = text.split('\n')
@@ -57,7 +56,6 @@ def parse_syllabus_to_structure(text):
             current_unit = "General Topics"
             structure[current_unit] = []
 
-        # Topic detection logic for items like "Back propagation networks" [cite: 6]
         if re.match(r'^[•\-\*]\s*(.*)|^\d+[\.\)]\s+(.*)', line):
             match = re.match(r'^[•\-\*]\s*(.*)|^\d+[\.\)]\s+(.*)', line)
             topic = match.group(1) if match.group(1) else match.group(2)
@@ -101,6 +99,7 @@ def professor_dashboard():
     if 'syllabus_data' not in st.session_state:
         st.session_state['syllabus_data'] = None
 
+    # Step 1: Upload
     with st.expander("📂 1. Upload Syllabus", expanded=not st.session_state['syllabus_data']):
         uploaded_file = st.file_uploader("Choose a file (.pdf, .docx)", type=["pdf", "docx"])
         if uploaded_file:
@@ -109,6 +108,7 @@ def professor_dashboard():
                 st.session_state['syllabus_data'] = parse_syllabus_to_structure(text)
                 st.success(f"Parsed {len(st.session_state['syllabus_data'])} units!")
 
+    # Step 2: Selection
     selected_topics = []
     if st.session_state['syllabus_data']:
         with st.expander("🎯 2. Select Scope", expanded=True):
@@ -122,7 +122,6 @@ def professor_dashboard():
             elif mode == "Complete Units/Modules":
                 for unit, topics in data.items():
                     if st.checkbox(f"**{unit}**", key=f"cb_{unit}"):
-                        # Dynamic display of topics under selected unit
                         unit_sel = st.multiselect(f"Topics in {unit}:", topics, default=topics, key=f"ms_{unit}")
                         selected_topics.extend(unit_sel)
                 
@@ -130,6 +129,7 @@ def professor_dashboard():
                 selected_topics = [t for sublist in data.values() for t in sublist]
                 st.info(f"All units selected ({len(selected_topics)} total topics).")
 
+    # Step 3: Publish
     if selected_topics:
         with st.expander("🛠️ 3. Quiz Settings", expanded=True):
             col1, col2, col3 = st.columns(3)
@@ -157,14 +157,30 @@ def professor_dashboard():
                             st.success("Quiz Published Successfully!")
                             st.balloons()
 
+    # Step 4: Manage Results
+    st.divider()
+    st.subheader("📊 Manage Results & Analytics")
+    try:
+        res_sheet = get_sheet("Results")
+        if res_sheet:
+            res_data = res_sheet.get_all_records()
+            if res_data:
+                res_df = pd.DataFrame(res_data)
+                st.dataframe(res_df, use_container_width=True)
+                st.download_button("📥 Export Results to CSV", res_df.to_csv(index=False), "student_results.csv", "text/csv")
+            else:
+                st.info("No student results recorded yet.")
+    except Exception as e:
+        st.warning("Could not load results table.")
+
 # --- STUDENT VIEW ---
 def student_dashboard():
     st.header("🎓 Student Portal")
     if 'profile' not in st.session_state:
-        with st.form("login_form"):
+        with st.form("login"):
             st.text_input("Full Name", key="name_in")
             st.selectbox("Degree", ["UG", "PG"], key="deg_in")
-            st.text_input("Stream", key="strm_in", placeholder="e.g. CSE")
+            st.text_input("Stream", key="strm_in")
             st.number_input("Semester", 1, 8, key="sem_in")
             if st.form_submit_button("Enter Portal"):
                 if st.session_state.name_in and st.session_state.strm_in:
@@ -173,8 +189,6 @@ def student_dashboard():
                         "strm": st.session_state.strm_in, "sem": st.session_state.sem_in
                     }
                     st.rerun()
-                else:
-                    st.error("Please fill in all details.")
     else:
         profile = st.session_state['profile']
         st.write(f"### Welcome, {profile['name']}")
@@ -190,7 +204,6 @@ def student_dashboard():
                 available = []
                 
                 for row in quizzes:
-                    # Fuzzy matching for Degree, Stream, and Semester
                     match_deg = str(row['Degree']).strip().lower() == profile['deg'].strip().lower()
                     match_strm = str(row['Stream']).strip().lower() == profile['strm'].strip().lower()
                     match_sem = int(row['Semester']) == int(profile['sem'])
@@ -198,50 +211,4 @@ def student_dashboard():
                     if row['Status'] == 'Open' and match_deg and match_strm and match_sem:
                         start = datetime.datetime.strptime(str(row['StartTime']), '%Y-%m-%d').date()
                         end = datetime.datetime.strptime(str(row['EndTime']), '%Y-%m-%d').date()
-                        if start <= today <= end:
-                            available.append(row)
-
-                if available:
-                    for quiz in available:
-                        with st.container(border=True):
-                            st.write(f"**Quiz Topic:** {quiz['Topic']}")
-                            if st.button(f"Take Quiz", key=f"tk_{quiz['QuizID']}"):
-                                st.session_state['active_quiz'] = quiz
-                                st.rerun()
-                else:
-                    st.info("No active quizzes found for your profile.")
-        except Exception as e:
-            st.error(f"Error loading quizzes: {e}")
-
-    # Active Quiz UI
-    if 'active_quiz' in st.session_state:
-        quiz = st.session_state['active_quiz']
-        q_list = json.loads(quiz['Questions'])['questions']
-        with st.form("take_quiz"):
-            st.subheader(quiz['Topic'])
-            user_ans = {}
-            for q in q_list:
-                st.write(f"**{q['question_text']}**")
-                user_ans[q['id']] = st.radio("Options:", q['options'], key=f"ans_{q['id']}", label_visibility="collapsed")
-            
-            if st.form_submit_button("Submit Quiz"):
-                score = sum(1 for q in q_list if user_ans[q['id']][0] == q['correct_option'])
-                res_sheet = get_sheet("Results")
-                if res_sheet:
-                    res_sheet.append_row([quiz['QuizID'], profile['name'], profile['deg'], profile['strm'], profile['sem'], quiz['Topic'], score, len(q_list), str(datetime.datetime.now())])
-                    st.success(f"Score: {score}/{len(q_list)}")
-                    del st.session_state['active_quiz']
-                    st.info("Quiz submitted successfully.")
-
-# --- MAIN ---
-st.set_page_config(page_title="Syllabus Quiz AI", layout="wide")
-role = st.sidebar.selectbox("Access Level", ["Student", "Professor"])
-
-if role == "Professor":
-    pwd = st.sidebar.text_input("Enter Admin Password", type="password")
-    if pwd == ADMIN_PASSWORD:
-        professor_dashboard()
-    elif pwd:
-        st.sidebar.error("Invalid Password")
-else:
-    student_dashboard()
+                        if start <= today <= end
