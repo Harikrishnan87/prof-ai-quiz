@@ -1,5 +1,5 @@
 import streamlit as st
-import pd
+import pandas as pd
 import json
 import datetime
 import random
@@ -32,7 +32,7 @@ def extract_text_from_file(uploaded_file):
         return ""
 
 def parse_syllabus_to_structure(text):
-    """Identifies Units and topics while filtering administrative noise ."""
+    """Identifies Units and topics while filtering administrative noise [cite: 5-21]."""
     noise_patterns = [r'L T P C', r'P18PECS\d+', r'Total Contact Hours', r'Prerequisite:', r'COURSE OUTCOMES', r'TOTAL NO OF PERIODS']
     header_pattern = r'(?im)^(?:Unit|Module|Chapter|Part)\s*(?:[IVX\d]+|One|Two|Three|Four|Five|Six|Seven|Eight|Nine|Ten)[:.-]?\s*(.*)'
     lines = text.split('\n')
@@ -116,7 +116,6 @@ def professor_dashboard():
                 else:
                     st.warning("Please select topics.")
 
-    # --- PROFESSOR PREVIEW/EDIT ---
     if st.session_state['staging_quiz']:
         st.divider()
         st.subheader("📝 Review & Edit Stage")
@@ -140,7 +139,6 @@ def professor_dashboard():
                 st.success("Quiz Published!")
                 st.session_state['staging_quiz'] = None
 
-    # --- MANAGE RESULTS & WEAKNESS IDENTIFICATION ---
     st.divider()
     st.subheader("📊 Manage Results & Class Analytics")
     try:
@@ -150,12 +148,10 @@ def professor_dashboard():
             if res_data:
                 df = pd.DataFrame(res_data)
                 st.dataframe(df, use_container_width=True)
-                
                 st.markdown("### 🔍 Knowledge Gap Analysis")
                 unit_performance = df.groupby('Topic')['Score'].mean().sort_values()
                 if not unit_performance.empty:
                     st.error(f"🚨 **Critical Weakness Identified:** Students are struggling most with **'{unit_performance.index[0]}'**.")
-                    st.info(f"Avg Score: {unit_performance.iloc[0]:.2f}. Targeted review suggested.")
                 st.download_button("📥 Export CSV", df.to_csv(index=False), "results.csv", "text/csv")
     except Exception: st.info("Results pending.")
 
@@ -189,7 +185,6 @@ def student_dashboard():
         quiz_data = json.loads(st.session_state['active_quiz']['Questions'])
         with st.form("quiz_run"):
             st.subheader(st.session_state['active_quiz']['Topic'])
-            st.caption(f"Timer set for {quiz_data.get('time_limit', 30)}s per question logic enabled.")
             answers = {q['id']: st.radio(f"**{q['question_text']}**", q['options'], key=f"run_{q['id']}") for q in quiz_data['questions']}
             if st.form_submit_button("Submit"):
                 score = sum(1 for q in quiz_data['questions'] if answers[q['id']][0] == q['correct_option'])
