@@ -4,3 +4,5 @@ pandas
 st-gsheets-connection
 gspread
 oauth2client
+pdfplumber
+python-docx
